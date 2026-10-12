@@ -1,6 +1,9 @@
 # Per-package "what's the latest upstream version" checks, used by
 # bin/check-updates. One [section] per pkgbuilds/<name>/ directory; the
 # section's version must come out in the same form as that PKGBUILD's $pkgver.
+#
+# Every new package added under pkgbuilds/ needs a section here, otherwise
+# bin/check-updates silently never checks it.
 
 [__config__]
 # nvchecker only writes `newver` when `oldver` is also set. bin/check-updates

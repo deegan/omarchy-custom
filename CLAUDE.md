@@ -26,6 +26,14 @@ to one-off personal packages instead of a curated gaming stack).
   built twice in the unit graph — reproducible even from a clean build, not a caching artifact).
   `native-tls` (system OpenSSL) sidesteps `ring` entirely and only affects the daemon's
   firmware-update HTTPS check, nothing else.
+- `cairn-tracker` — native Linux Hearthstone tracker (pure Python/PySide6, `arch=any`) from
+  `../cairn` (upstream `Ratpido-dev/cairn`), built from the tagged `v1.0.4` GitHub source.
+  Adapted from upstream's own `packaging/aur/PKGBUILD` (stale at 1.0.3). Adds `qt6-svg` to
+  `depends` (the icon test fails without the Qt SVG plugin; pyside6 doesn't pull it in) and runs
+  the test suite in `check()` with `QT_QPA_PLATFORM=offscreen`. The KWin follow-script that
+  `install.sh` installs is deliberately not packaged (Omarchy is Hyprland); for Hyprland, window
+  rules on app_id `cairn` are needed (see upstream README). The source sha256 was computed from the
+  GitHub tag tarball (small; no upstream manifest exists).
 
 ## PKGBUILD conventions
 

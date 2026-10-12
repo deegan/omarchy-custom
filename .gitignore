@@ -1,0 +1,9 @@
+/repo/
+
+# makepkg build/source artifacts left in pkgbuilds/*/
+pkgbuilds/*/src/
+pkgbuilds/*/pkg/
+pkgbuilds/*/*.tar.gz
+pkgbuilds/*/*.tar.xz
+pkgbuilds/*/*.tar.zst
+pkgbuilds/*/*.log

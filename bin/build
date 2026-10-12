@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# Build one or all packages in pkgbuilds/, using a clean archlinux Docker
+# container so builds are reproducible and never touch the host.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PKGBUILDS_DIR="$ROOT/pkgbuilds"
+REPO_DIR="$ROOT/repo"
+BUILD_IMAGE="archlinux:latest"
+
+mkdir -p "$REPO_DIR"
+
+build_one() {
+    local pkg="$1"
+    local pkgdir="$PKGBUILDS_DIR/$pkg"
+
+    if [ ! -f "$pkgdir/PKGBUILD" ]; then
+        echo "error: $pkgdir/PKGBUILD not found" >&2
+        return 1
+    fi
+
+    echo "==> Building $pkg in a clean archlinux container"
+
+    # Mount our own published repo (if `bin/publish` has run) as a local
+    # pacman source, so any package here that depends on another package
+    # from this same repo can resolve it with `makepkg -s` without reaching
+    # outside our own infrastructure.
+    #
+    # Also mount persistent named volumes for pacman's package cache and (for
+    # Rust packages) cargo's crate registry, shared across every build and
+    # every package in this repo — without these, each container starts from
+    # nothing and re-downloads its whole toolchain and dependency tree from
+    # scratch every single time, which is painfully slow for anything that
+    # compiles from source.
+    docker run --rm \
+        -v "$pkgdir":/build \
+        -v "$REPO_DIR":/repo:ro \
+        -v omarchy-custom-pacman-cache:/var/cache/pacman/pkg \
+        -v omarchy-custom-cargo-registry:/home/builder/.cargo/registry \
+        -w /build \
+        "$BUILD_IMAGE" \
+        bash -c '
+            set -e
+            if [ -f /repo/omarchy-custom.db ]; then
+                grep -q "^\[omarchy-custom\]" /etc/pacman.conf || printf "\n[omarchy-custom]\nSigLevel = Optional TrustAll\nServer = file:///repo\n" >> /etc/pacman.conf
+            fi
+            pacman -Syu --noconfirm --needed base-devel sudo git
+            useradd -m builder
+            echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
+            mkdir -p /home/builder/.cargo/registry
+            chown -R builder:builder /build /home/builder/.cargo
+            su builder -c "makepkg -s --noconfirm --clean"
+        '
+
+    shopt -s nullglob
+    local artifacts=("$pkgdir"/*.pkg.tar.zst)
+    shopt -u nullglob
+
+    if [ ${#artifacts[@]} -eq 0 ]; then
+        echo "error: no package artifacts produced for $pkg" >&2
+        return 1
+    fi
+
+    mv -f "${artifacts[@]}" "$REPO_DIR/"
+    rm -rf "$pkgdir/src" "$pkgdir/pkg"
+    rm -f "$pkgdir"/*.log
+
+    echo "==> Built $pkg -> $REPO_DIR"
+
+    # Republish immediately so later packages in the same run (or a later
+    # `bin/build` invocation) can resolve dependencies on whatever we just
+    # built.
+    if command -v repo-add >/dev/null 2>&1; then
+        "$ROOT/bin/publish" >/dev/null
+    else
+        echo "warning: repo-add not found on host, skipping auto-publish; run bin/publish manually" >&2
+    fi
+
+    # Docker runs the container (and therefore writes the mounted volumes) as
+    # root regardless of whether `docker` itself was invoked via sudo, which
+    # leaves repo/ owned by root on the host. If we were run via sudo, hand
+    # it back to the invoking user so a plain (non-sudo) `bin/publish` or
+    # `docker compose up` afterwards doesn't hit a permission error.
+    if [ -n "${SUDO_UID:-}" ]; then
+        chown -R "$SUDO_UID:$SUDO_GID" "$REPO_DIR" "$pkgdir"
+    fi
+}
+
+if [ "$#" -eq 0 ]; then
+    shopt -s nullglob
+    pkgs=("$PKGBUILDS_DIR"/*/PKGBUILD)
+    shopt -u nullglob
+
+    if [ ${#pkgs[@]} -eq 0 ]; then
+        echo "No PKGBUILDs found under $PKGBUILDS_DIR" >&2
+        exit 1
+    fi
+
+    failed=()
+    for pkgbuild in "${pkgs[@]}"; do
+        pkg="$(basename "$(dirname "$pkgbuild")")"
+        build_one "$pkg" || failed+=("$pkg")
+    done
+
+    if [ ${#failed[@]} -gt 0 ]; then
+        echo "==> Build failed for: ${failed[*]}" >&2
+        exit 1
+    fi
+else
+    for pkg in "$@"; do
+        build_one "$pkg"
+    done
+fi

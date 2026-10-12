@@ -1,6 +1,6 @@
 <div align="center">
 
-# omarchy-custom
+<img src="omarchy-custom.png" alt="omarchy-custom: the unofficial customization repository" width="100%">
 
 **A personal pacman repository for [Omarchy](https://omarchy.org) — no AUR at runtime.**
 

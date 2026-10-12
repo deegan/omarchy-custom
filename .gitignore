@@ -7,3 +7,6 @@ pkgbuilds/*/*.tar.gz
 pkgbuilds/*/*.tar.xz
 pkgbuilds/*/*.tar.zst
 pkgbuilds/*/*.log
+
+# bin/check-updates state
+bin/.nvchecker-*.json

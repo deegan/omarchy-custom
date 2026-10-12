@@ -64,6 +64,14 @@ pacman -Sy
 pacman -S goxlr-utility
 ```
 
+## Checking for upstream updates
+
+`bin/check-updates` compares each PKGBUILD's `pkgver` with upstream (nvchecker, config in
+`bin/nvchecker.toml`; runs in a throwaway container if nvchecker isn't installed). Exits non-zero
+if anything is outdated. `--fix` bumps `pkgver`/`pkgrel`/sha256 (downloading the small tag archive
+once to hash it); then re-run `bin/build <pkg>` — a bump can break `goxlr-utility`'s `native-tls`
+sed. Add a section to `bin/nvchecker.toml` for every new package.
+
 ## What NOT to do
 
 - Do not shell out to `yay` or any AUR helper. We are the AUR helper.

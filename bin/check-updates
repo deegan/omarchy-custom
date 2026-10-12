@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Report which packages have a newer upstream version than their PKGBUILD,
+# using nvchecker (bin/nvchecker.toml). Read-only by default.
+#
+# --fix bumps pkgver (pkgrel back to 1) and the source sha256 of outdated
+# packages. Both packages here use GitHub-generated tag archives, which have
+# no published checksum, so --fix downloads each new tag archive once to hash
+# it. A bump only changes the version and checksum: re-run bin/build and check
+# the result, since a new upstream release can break patches (goxlr-utility's
+# native-tls sed in build()).
+#
+# Requires `jq`. Uses the host's `nvchecker` if present, otherwise a
+# throwaway archlinux container.
+set -euo pipefail
+
+fix_mode=false
+case "${1:-}" in
+    "") ;;
+    --fix) fix_mode=true ;;
+    *) echo "usage: $(basename "$0") [--fix]" >&2; exit 1 ;;
+esac
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN_DIR="$ROOT/bin"
+PKGBUILDS_DIR="$ROOT/pkgbuilds"
+CONFIG="$BIN_DIR/nvchecker.toml"
+NEWVER_FILE="$BIN_DIR/.nvchecker-newver.json"
+OLDVER_FILE="$BIN_DIR/.nvchecker-oldver.json"
+BUILD_IMAGE="archlinux:latest"
+
+command -v jq >/dev/null 2>&1 || { echo "error: jq is required on the host" >&2; exit 1; }
+
+rm -f "$NEWVER_FILE" "$OLDVER_FILE"
+
+if command -v nvchecker >/dev/null 2>&1; then
+    (cd "$BIN_DIR" && nvchecker -c "$CONFIG")
+else
+    echo "==> nvchecker not found on host, running it in a throwaway archlinux container" >&2
+    docker run --rm -v "$BIN_DIR":/bin-mount -w /bin-mount "$BUILD_IMAGE" \
+        bash -c 'set -e; pacman -Sy --noconfirm --needed nvchecker git; nvchecker -c nvchecker.toml'
+fi
+
+[ -f "$NEWVER_FILE" ] || { echo "error: nvchecker produced no output" >&2; exit 1; }
+
+current_version() {  # current_version <pkgdir>
+    ( set +eu; source "$1/PKGBUILD" >/dev/null 2>&1; echo "$pkgver" ) 2>/dev/null
+}
+
+set_var() {  # set_var pkgbuild varname value
+    sed -i -E "s|^${2}=.*|${2}=${3}|" "$1"
+}
+
+# Source archive URL for a package at a given version, taken from the
+# PKGBUILD's own source=() line so the two can't drift apart.
+source_url() {  # source_url <pkgdir> <new pkgver>
+    ( set +eu; source "$1/PKGBUILD" >/dev/null 2>&1
+      # source=() is already expanded with the OLD pkgver; swap in the new one
+      echo "${source[0]#*::}" | sed "s/${pkgver//./\\.}/$2/g" ) 2>/dev/null
+}
+
+bump() {  # bump <pkg> <new version>
+    local pkg="$1" new="$2" pkgdir="$PKGBUILDS_DIR/$1" url tmp hash
+    url="$(source_url "$pkgdir" "$new")"
+    tmp="$(mktemp)"
+    if ! curl -fsSL "$url" -o "$tmp"; then
+        rm -f "$tmp"; echo "  ! failed to download $url to hash it" >&2; return 1
+    fi
+    hash="$(sha256sum "$tmp" | awk '{print $1}')"; rm -f "$tmp"
+    set_var "$pkgdir/PKGBUILD" pkgver "$new"
+    set_var "$pkgdir/PKGBUILD" pkgrel 1
+    sed -i -E "0,/^sha256sums=\('[^']*'/s//sha256sums=('${hash}'/" "$pkgdir/PKGBUILD"
+}
+
+printf '%-20s %-12s %-12s %s\n' "PACKAGE" "CURRENT" "UPSTREAM" "STATUS"
+
+exit_code=0
+outdated=()
+while IFS= read -r pkg; do
+    pkgdir="$PKGBUILDS_DIR/$pkg"
+    if [ ! -f "$pkgdir/PKGBUILD" ]; then
+        printf '%-20s %-12s %-12s %s\n' "$pkg" "-" "-" "no matching pkgbuilds/ dir"
+        exit_code=1; continue
+    fi
+    upstream="$(jq -r --arg p "$pkg" '.data[$p].version // empty' "$NEWVER_FILE")"
+    current="$(current_version "$pkgdir")" || current=""
+    [ -n "$current" ] || current="?"
+    if [ -z "$upstream" ]; then
+        status="check failed"; exit_code=1
+    elif [ "$upstream" = "$current" ]; then
+        status="up to date"
+    else
+        status="UPDATE AVAILABLE"; exit_code=1; outdated+=("$pkg")
+    fi
+    printf '%-20s %-12s %-12s %s\n' "$pkg" "$current" "${upstream:--}" "$status"
+done < <(grep -oP '^\[\K[a-zA-Z0-9_.-]+(?=\])' "$CONFIG" | grep -v '^__config__$')
+
+if $fix_mode && [ ${#outdated[@]} -gt 0 ]; then
+    echo
+    for pkg in "${outdated[@]}"; do
+        new="$(jq -r --arg p "$pkg" '.data[$p].version' "$NEWVER_FILE")"
+        if bump "$pkg" "$new"; then
+            echo "==> bumped $pkg to $new -- now run: bin/build $pkg"
+        else
+            echo "==> could not bump $pkg" >&2
+        fi
+    done
+fi
+
+exit "$exit_code"
